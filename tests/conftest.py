@@ -364,6 +364,9 @@ def string_containing_matcher():
 
             return self.substring in test_string
 
+        def __ne__(self, test_string):
+            return not self.__eq__(test_string)
+
     return StringContaining
 
 
@@ -404,6 +407,9 @@ def dictionary_containing_matcher():
             # {"dogs": "are great"} == DictionaryContaining({"dogs": StringContaining("great")})
             # evaluate to True
             return all(self.subdict[key] == test_dict.get(key) for key in self.subdict)
+
+        def __ne__(self, test_dict):
+            return not self.__eq__(test_dict)
 
     return DictionaryContaining
 
@@ -456,5 +462,8 @@ def object_described_by_matcher():
                     return False
 
             return True
+
+        def __ne__(self, test_obj):
+            return not self.__eq__(test_obj)
 
     return ObjectDescribedBy
