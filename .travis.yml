@@ -25,10 +25,10 @@ cache:
   pip: true
   cargo: true
 
-branches:
-  only:
-    - master
-    - /^release\/.+$/
+# branches:
+#   only:
+#     - master
+#     - /^release\/.+$/
 
 jobs:
   include:
