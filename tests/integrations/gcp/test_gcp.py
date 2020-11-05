@@ -51,6 +51,10 @@ def envelope_processor(envelope):
     (item,) = envelope.items
     return item.get_bytes()
 
+def make_assertions():
+    # Make any assertions you need to make before the function exits
+    pass
+
 class TestTransport(HttpTransport):
     def _send_event(self, event):
         event = event_processor(event)
@@ -63,6 +67,14 @@ class TestTransport(HttpTransport):
     def _send_envelope(self, envelope):
         envelope = envelope_processor(envelope)
         print("\\nENVELOPE: {}\\n".format(envelope.decode(\"utf-8\")))
+
+    def flush(self, timeout, callback=None):
+        # this is here only because flushing is the last thing we do, so it
+        # guarantees that unless we're testing the flushing itself, whatever we
+        # need to assert on has already happened
+        make_assertions()
+
+        super(TestTransport, self).flush(timeout, callback)
 
 def init_sdk(timeout_warning=False, **extra_init_args):
     sentry_sdk.init(
@@ -125,13 +137,13 @@ def run_cloud_function():
                 else:
                     continue
 
-        return envelope, event
+        return envelope, event, stream_data
 
     return inner
 
 
 def test_handled_exception(run_cloud_function):
-    envelope, event = run_cloud_function(
+    envelope, event, stream_data = run_cloud_function(
         dedent(
             """
         functionhandler = None
@@ -157,7 +169,7 @@ def test_handled_exception(run_cloud_function):
 
 
 def test_unhandled_exception(run_cloud_function):
-    envelope, event = run_cloud_function(
+    envelope, event, stream_data = run_cloud_function(
         dedent(
             """
         functionhandler = None
@@ -184,7 +196,7 @@ def test_unhandled_exception(run_cloud_function):
 
 
 def test_timeout_error(run_cloud_function):
-    envelope, event = run_cloud_function(
+    envelope, event, stream_data = run_cloud_function(
         dedent(
             """
         functionhandler = None
@@ -214,7 +226,7 @@ def test_timeout_error(run_cloud_function):
 
 
 def test_performance_no_error(run_cloud_function):
-    envelope, event = run_cloud_function(
+    envelope, event, stream_data = run_cloud_function(
         dedent(
             """
         functionhandler = None
@@ -239,7 +251,7 @@ def test_performance_no_error(run_cloud_function):
 
 
 def test_performance_error(run_cloud_function):
-    envelope, event = run_cloud_function(
+    envelope, event, stream_data = run_cloud_function(
         dedent(
             """
         functionhandler = None
@@ -267,3 +279,83 @@ def test_performance_error(run_cloud_function):
     assert exception["type"] == "Exception"
     assert exception["value"] == "something went wrong"
     assert exception["mechanism"] == {"type": "gcp", "handled": False}
+
+
+def test_traces_sampler_gets_correct_values_in_sampling_context(
+    run_cloud_function, DictionaryContaining  # noqa:N803
+):
+    import inspect
+
+    envelope, event, stream_data = run_cloud_function(
+        dedent(
+            """
+            functionhandler = None
+            event = {
+                "type": "chase",
+                "chasers": ["Maisey", "Charlie"],
+                "num_squirrels": 2,
+            }
+            def cloud_function(functionhandler, event):
+                return "dogs are great"
+            """
+        )
+        + FUNCTIONS_PRELUDE
+        + dedent(inspect.getsource(DictionaryContaining))
+        + dedent(
+            """
+            os.environ["FUNCTION_NAME"] = "chase_into_tree"
+            os.environ["FUNCTION_REGION"] = "dogpark"
+            os.environ["GCP_PROJECT"] = "SquirrelChasing"
+
+            import sys
+            PY2 = sys.version_info[0] == 2
+
+            try:
+                string_types = (str, unicode)  # unicode only exists in python 2
+
+                def dict_values_to_unicode(py2_dict):
+                    for key, value in py2_dict.items():
+                        if isinstance(value, str):
+                            py2_dict[key] = unicode(value)
+            except NameError:
+                string_types = (str,)
+
+                def dict_values_to_unicode(py3_dict):
+                    pass
+
+            def make_assertions():
+                try:
+                    traces_sampler.assert_any_call(
+                        DictionaryContaining({
+                            "gcp_env": DictionaryContaining({
+                                "function_name": "chase_into_tree",
+                                "function_region": "dogpark",
+                                "function_project": "SquirrelChasing",
+                            }),
+                            "gcp_event": {
+                                "type": "chase",
+                                "chasers": ["Maisey", "Charlie"],
+                                "num_squirrels": 2,
+                            },
+                        })
+                    )
+                except AssertionError as e:
+                    # catch the error and print it because the error itself will
+                    # get swallowed by the SDK as an "internal exception"
+                    print("\\nAssertionError: {}\\n".format(e))
+
+
+            traces_sampler = Mock(return_value=True)
+
+            init_sdk(
+                traces_sampler=traces_sampler,
+                debug=True
+            )
+
+
+            gcp_functions.worker_v1.FunctionHandler.invoke_user_function(functionhandler, event)
+            """
+        )
+    )
+
+    assert "AssertionError" not in str(stream_data)
