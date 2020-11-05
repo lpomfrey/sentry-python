@@ -27,7 +27,7 @@ boto3 = pytest.importorskip("boto3")
 LAMBDA_PRELUDE = """
 from __future__ import print_function
 
-from sentry_sdk.integrations.aws_lambda import AwsLambdaIntegration
+from sentry_sdk.integrations.aws_lambda import AwsLambdaIntegration, get_lambda_bootstrap
 import sentry_sdk
 import json
 import time
@@ -53,6 +53,10 @@ def envelope_processor(envelope):
 
     return envelope_data
 
+def make_assertions():
+    # Make any assertions you need to make before the lambda exits
+    pass
+
 class TestTransport(HttpTransport):
     def _send_event(self, event):
         event = event_processor(event)
@@ -65,6 +69,14 @@ class TestTransport(HttpTransport):
     def _send_envelope(self, envelope):
         envelope = envelope_processor(envelope)
         print("\\nENVELOPE: {}\\n".format(json.dumps(envelope)))
+
+    def flush(self, timeout, callback=None):
+        # this is here only because flushing is the last thing we do, so it
+        # guarantees that unless we're testing the flushing itself, whatever we
+        # need to assert on has already happened
+        make_assertions()
+
+        super(TestTransport, self).flush(timeout, callback)
 
 def init_sdk(timeout_warning=False, **extra_init_args):
     sentry_sdk.init(
@@ -106,6 +118,7 @@ def run_lambda_function(request, lambda_client, lambda_runtime):
             timeout=timeout,
             syntax_check=syntax_check,
         )
+        response["Payload"] = response["Payload"].read()
 
         events = []
         envelopes = []
@@ -362,3 +375,84 @@ def test_performance_error(run_lambda_function):
     assert envelope["contexts"]["trace"]["op"] == "serverless.function"
     assert envelope["transaction"].startswith("test_function_")
     assert envelope["transaction"] in envelope["request"]["url"]
+
+
+def test_traces_sampler_gets_correct_values_in_sampling_context(
+    run_lambda_function,
+    DictionaryContaining,  # noqa:N803
+    ObjectDescribedBy,  # noqa:N803
+    StringContaining,  # noqa:N803
+):
+    import inspect
+
+    envelopes, events, response = run_lambda_function(
+        LAMBDA_PRELUDE
+        + dedent(inspect.getsource(StringContaining))
+        + dedent(inspect.getsource(DictionaryContaining))
+        + dedent(inspect.getsource(ObjectDescribedBy))
+        + dedent(
+            """
+            try:
+                from unittest import mock  # python 3.3 and above
+            except ImportError:
+                import mock  # python < 3.3
+
+            import sys
+            PY2 = sys.version_info[0] == 2
+
+            try:
+                string_types = (str, unicode)  # unicode only exists in python 2
+
+                def dict_values_to_unicode(py2_dict):
+                    for key, value in py2_dict.items():
+                        if isinstance(value, str):
+                            py2_dict[key] = unicode(value)
+            except NameError:
+                string_types = (str,)
+
+                def dict_values_to_unicode(py3_dict):
+                    pass
+
+            lambda_context_class = None
+
+            def make_assertions():
+                try:
+                    traces_sampler.assert_any_call(
+                        DictionaryContaining(
+                            {
+                                "aws_event": DictionaryContaining({
+                                    "httpMethod": "GET",
+                                    "path": "/sit/stay/rollover",
+                                    "headers": {"Host": "dogs.are.great", "X-Forwarded-Proto": "http"},
+                                }),
+                                "aws_context": ObjectDescribedBy(
+                                    type=lambda_context_class,
+                                    attrs={
+                                        'function_name': StringContaining("test_function"),
+                                        'function_version': '$LATEST',
+                                    }
+                                )
+                            }
+                        )
+                    )
+                except AssertionError as e:
+                    # catch the error and print it because the error itself will
+                    # get swallowed by the SDK as an "internal exception"
+                    print("\\nERROR: AssertionError: traces_sampler not called with the specified argument.")
+
+            traces_sampler = mock.Mock(return_value=True)
+            init_sdk(
+                traces_sampler=traces_sampler,
+            )
+
+            def test_handler(event, context):
+                # grab this type while it's in scope for testing later
+                lambda_context_class = get_lambda_bootstrap().LambdaContext
+
+                return "dogs are great"
+        """
+        ),
+        b'{"httpMethod": "GET", "path": "/sit/stay/rollover", "headers": {"Host": "dogs.are.great", "X-Forwarded-Proto": "http"}}',
+    )
+
+    assert "AssertionError" not in str(response["LogResult"])

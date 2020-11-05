@@ -107,7 +107,10 @@ def _wrap_handler(handler):
             transaction = Transaction.continue_from_headers(
                 headers, op="serverless.function", name=context.function_name
             )
-            with hub.start_transaction(transaction):
+            with hub.start_transaction(
+                transaction,
+                custom_sampling_context={"aws_event": event, "aws_context": context},
+            ):
                 try:
                     return handler(event, context, *args, **kwargs)
                 except Exception:
