@@ -33,6 +33,11 @@ if PY2:
 
     exec("def reraise(tp, value, tb=None):\n raise tp, value, tb")
 
+    def dict_values_to_unicode(py2_dict):
+        for key, value in py2_dict.items():
+            if isinstance(value, str):
+                py2_dict[key] = unicode(value)  # noqa
+
 
 else:
     import urllib.parse as urlparse  # noqa
@@ -53,6 +58,9 @@ else:
         if value.__traceback__ is not tb:
             raise value.with_traceback(tb)
         raise value
+
+    def dict_values_to_unicode(py3_dict):
+        pass
 
 
 def with_metaclass(meta, *bases):
