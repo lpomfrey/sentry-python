@@ -7,7 +7,7 @@ if MYPY:
     from typing import Tuple
     from typing import Any
     from typing import Type
-
+    from typing import Dict
     from typing import TypeVar
 
     T = TypeVar("T")
@@ -34,6 +34,7 @@ if PY2:
     exec("def reraise(tp, value, tb=None):\n raise tp, value, tb")
 
     def dict_values_to_unicode(py2_dict):
+        # type: (Dict[str, Any]) -> None
         for key, value in py2_dict.items():
             if isinstance(value, str):
                 py2_dict[key] = unicode(value)  # noqa
@@ -60,6 +61,7 @@ else:
         raise value
 
     def dict_values_to_unicode(py3_dict):
+        # type: (Dict[str, Any]) -> None
         pass
 
 

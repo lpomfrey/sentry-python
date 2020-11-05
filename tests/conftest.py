@@ -8,7 +8,13 @@ import gevent
 import eventlet
 
 import sentry_sdk
-from sentry_sdk._compat import reraise, string_types, iteritems
+from sentry_sdk._compat import (
+    reraise,
+    string_types,
+    iteritems,
+    PY2,
+    dict_values_to_unicode,
+)
 from sentry_sdk.transport import Transport
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.utils import capture_internal_exceptions
@@ -356,7 +362,7 @@ def string_containing_matcher():
             self.substring = substring
 
         def __eq__(self, test_string):
-            if not isinstance(test_string, str):
+            if not isinstance(test_string, string_types):
                 return False
 
             if len(self.substring) > len(test_string):
@@ -393,6 +399,10 @@ def dictionary_containing_matcher():
         def __init__(self, subdict):
             self.subdict = subdict
 
+            if PY2 and self.subdict:
+                # required to make __eq__ work reliably
+                dict_values_to_unicode(self.subdict)
+
         def __eq__(self, test_dict):
             if not isinstance(test_dict, dict):
                 return False
@@ -400,13 +410,15 @@ def dictionary_containing_matcher():
             if len(self.subdict) > len(test_dict):
                 return False
 
-            # Have to test self == other (rather than vice-versa) in case
-            # any of the values in self.subdict is another matcher with a custom
-            # __eq__ method (in LHS == RHS, LHS's __eq__ is tried before RHS's).
-            # In other words, this order is important so that examples like
-            # {"dogs": "are great"} == DictionaryContaining({"dogs": StringContaining("great")})
-            # evaluate to True
-            return all(self.subdict[key] == test_dict.get(key) for key in self.subdict)
+            # Use __eq__ directly to ensure that examples like
+            #   {"dogs": "are great"} == DictionaryContaining({"dogs": StringContaining("great")})
+            # evaluate to True (in other words, examples where the values in
+            # self.subdict might also have overridden __eq__ methods; this makes
+            # sure those methods get used)
+            return all(
+                key in test_dict and self.subdict[key].__eq__(test_dict.get(key))
+                for key in self.subdict
+            )
 
         def __ne__(self, test_dict):
             return not self.__eq__(test_dict)
@@ -443,6 +455,10 @@ def object_described_by_matcher():
             self.type = type
             self.attrs = attrs
 
+            if PY2 and self.attrs:
+                # required to make __eq__ work reliably
+                dict_values_to_unicode(self.attrs)
+
         def __eq__(self, test_obj):
             if self.type:
                 if not isinstance(test_obj, self.type):
@@ -451,10 +467,16 @@ def object_described_by_matcher():
             # all checks here done with getattr rather than comparing to
             # __dict__ because __dict__ isn't guaranteed to exist
             if self.attrs:
-                # attributes must exist AND values must match
                 try:
-                    if any(
-                        getattr(test_obj, attr_name) != attr_value
+                    # Use __eq__ directly to ensure that examples like
+                    #   maisey = Dog()
+                    #   maisey.name = "Maisey the Dog"
+                    #   maisey == ObjectDescribedBy(attrs={"name": StringContaining("Maisey")})
+                    # evaluate to True (in other words, examples where the
+                    # values in self.attrs might also have overridden __eq__
+                    # methods; this makes sure those methods get used)
+                    if not all(
+                        attr_value.__eq__(getattr(test_obj, attr_name))
                         for attr_name, attr_value in self.attrs.items()
                     ):
                         return False  # wrong attribute value
